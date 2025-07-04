@@ -425,3 +425,41 @@ export const getZapByShortId = async (req: Request, res: Response) => {
     res.status(500).json(new ApiError(500, "Internal server error"));
   }
 };
+
+// export const shortenUrl = async (req: Request, res: Response) => {
+//   try {
+//     const { url, name } = req.body;
+//     if (!url || typeof url !== "string" || !/^https?:\/\//.test(url)) {
+//       return res
+//         .status(400)
+//         .json(new ApiError(400, "A valid URL is required."));
+//     }
+//     const shortId = nanoid();
+//     const zapId = nanoid();
+//     const zap = await prisma.zap.create({
+//       data: {
+//         type: "URL",
+//         name: name || "Shortened URL",
+//         cloudUrl: url,
+//         originalUrl: url,
+//         qrId: zapId,
+//         shortId,
+//       },
+//     });
+//     const domain = process.env.BASE_URL || "https://api.krishnapaljadeja.com";
+//     const shortUrl = `${domain}/api/zaps/${shortId}`;
+//     const qrCode = await QRCode.toDataURL(shortUrl);
+//     return res
+//       .status(201)
+//       .json(
+//         new ApiResponse(
+//           201,
+//           { zapId, shortUrl, qrCode, type: "URL", name: zap.name },
+//           "Short URL created successfully."
+//         )
+//       );
+//   } catch (err) {
+//     console.error("shortenUrl Error:", err);
+//     return res.status(500).json(new ApiError(500, "Internal server error"));
+//   }
+// };
