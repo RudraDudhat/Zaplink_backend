@@ -11,6 +11,7 @@ import mammoth from "mammoth";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { deleteFromCloudinary } from "../utils/cloudinaryHelper";
 dotenv.config();
 
 const nanoid = customAlphabet("1234567890abcdefghijklmnopqrstuvwxyz", 6);
@@ -292,11 +293,19 @@ export const getZapByShortId = async (req: Request, res: Response) => {
 
       // Compare timestamps to avoid timezone issues
       if (currentTime.getTime() > expirationTime.getTime()) {
+        if (zap.cloudUrl) {
+          await deleteFromCloudinary(zap.cloudUrl);
+        }
+        await prisma.zap.delete({ where: { id: zap.id } });
         return res.redirect(`${FRONTEND_URL}/zaps/${shortId}?error=expired`);
       }
     }
 
     if (zap.viewLimit !== null && zap.viewCount >= zap.viewLimit) {
+      if (zap.cloudUrl) {
+        await deleteFromCloudinary(zap.cloudUrl);
+      }
+      await prisma.zap.delete({ where: { id: zap.id } });
       return res.redirect(`${FRONTEND_URL}/zaps/${shortId}?error=viewlimit`);
     }
 
@@ -335,6 +344,10 @@ export const getZapByShortId = async (req: Request, res: Response) => {
       updatedZap.viewLimit !== null &&
       updatedZap.viewCount > updatedZap.viewLimit
     ) {
+      if (updatedZap.cloudUrl) {
+        await deleteFromCloudinary(updatedZap.cloudUrl);
+      }
+      await prisma.zap.delete({ where: { id: updatedZap.id } });
       if (req.headers.accept && req.headers.accept.includes("text/html")) {
         return res.redirect(`${FRONTEND_URL}/zaps/${shortId}?error=viewlimit`);
       }
@@ -353,7 +366,7 @@ export const getZapByShortId = async (req: Request, res: Response) => {
           res.json({ url: zap.originalUrl, type: "redirect" });
         }
       } else if (zap.originalUrl.startsWith("TEXT_CONTENT:")) {
-        const textContent = zap.originalUrl.substring(13); 
+        const textContent = zap.originalUrl.substring(13);
 
         if (req.headers.accept && req.headers.accept.includes("text/html")) {
           const html = generateTextHtml(zap.name || "Untitled", textContent);
@@ -366,10 +379,10 @@ export const getZapByShortId = async (req: Request, res: Response) => {
         zap.originalUrl.startsWith("DOCX_CONTENT:") ||
         zap.originalUrl.startsWith("PPTX_CONTENT:")
       ) {
-        const textContent = zap.originalUrl.substring(13); 
+        const textContent = zap.originalUrl.substring(13);
 
         if (req.headers.accept && req.headers.accept.includes("text/html")) {
-    
+
           const html = generateTextHtml(zap.name || "Untitled", textContent);
           res.set("Content-Type", "text/html");
           res.send(html);
@@ -377,7 +390,7 @@ export const getZapByShortId = async (req: Request, res: Response) => {
           res.json({ content: textContent, type: "document", name: zap.name });
         }
       } else {
- 
+
         const base64Data = zap.originalUrl;
         const matches = base64Data.match(
           /^data:(image\/[a-zA-Z]+);base64,(.+)$/

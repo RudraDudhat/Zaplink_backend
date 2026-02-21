@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import routes from "./Routes/index";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
+import { initializeCronJobs } from "./utils/cron";
 
 dotenv.config();
 
@@ -17,7 +18,7 @@ app.use(express.json());
 app.use(cookieParser());
 app.get("/favicon.ico", (req: any, res: any) => res.status(204).end());
 app.get("/", (req: any, res: any) => res.status(200).send("ZapLink API Root"));
-app.get('/health', (req:any, res:any) => {
+app.get('/health', (req: any, res: any) => {
   res.status(200).send('OK');
 });
 
@@ -39,4 +40,6 @@ app.use("/api", routes);
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  initializeCronJobs();
+  console.log("Cron jobs initialized.");
 });
