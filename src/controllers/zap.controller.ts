@@ -3,7 +3,7 @@ import bcrypt from "bcrypt";
 import { customAlphabet } from "nanoid";
 import QRCode from "qrcode";
 import prisma from "../utils/prismClient";
-import cloudinary from "../middlewares/cloudinary";
+// cloudinary not used for local file storage
 import { ApiError } from "../utils/ApiError";
 import { ApiResponse } from "../utils/ApiResponse";
 import dotenv from "dotenv";
@@ -160,6 +160,7 @@ export const createZap = async (req: Request, res: any) => {
       password,
       viewLimit,
       expiresAt,
+      compress, // boolean flag from frontend
     } = req.body;
     const file = req.file;
 
@@ -181,20 +182,42 @@ export const createZap = async (req: Request, res: any) => {
     let contentToStore: string | null = null;
 
     if (file) {
-      uploadedUrl = (file as any).path;
+      let filePath = (file as any).path;
+      const fileName = (file as any).originalname;
+      const fileExtension = path.extname(fileName).toLowerCase();
+
+      // compress PDF if requested
+      const shouldCompress = compress === true || compress === "true" || compress === "1";
+      if (fileExtension === ".pdf" && shouldCompress) {
+        try {
+          const compressedPath = path.join(
+            path.dirname(filePath),
+            `${path.basename(filePath, ".pdf")}_compressed.pdf`
+          );
+          // lazy import to avoid unnecessary dependency when not using
+          const { compressPDF } = await import("../utils/pdfCompressor");
+          await compressPDF(filePath, compressedPath);
+          // Verify compressed file exists and is valid before using it
+          const compressedStats = await fs.promises.stat(compressedPath);
+          if (compressedStats.size > 0) {
+            filePath = compressedPath;
+            console.log(`PDF compressed successfully, size reduced`);
+          } else {
+            console.warn("Compressed file is empty, using original");
+          }
+        } catch (err) {
+          console.error("Compression error, continuing with original file:", err);
+          // Continue with original file if compression fails
+        }
+      }
+
+      uploadedUrl = filePath;
 
       if (type === "document" || type === "presentation") {
         try {
-          const filePath = (file as any).path;
-          const fileName = (file as any).originalname;
-          const fileExtension = path.extname(fileName).toLowerCase();
-
           if (fileExtension === ".docx") {
-            // Extract text from DOCX
-            const result = await mammoth.extractRawText({ path: filePath });
-            const extractedText = result.value;
-
-            if (extractedText.length > 10000) {
+            const extractedText = await mammoth.extractRawText({ path: filePath }).then((result: any) => result.value);
+            if (extractedText && extractedText.length > 10000) {
               return res
                 .status(400)
                 .json(
@@ -204,14 +227,12 @@ export const createZap = async (req: Request, res: any) => {
                   )
                 );
             }
-
             contentToStore = `DOCX_CONTENT:${extractedText}`;
           } else if (fileExtension === ".pptx") {
             contentToStore = `PPTX_CONTENT:This is a PowerPoint presentation. The file has been uploaded and can be downloaded from the cloud storage.`;
           }
         } catch (error) {
           console.error("Error extracting text from file:", error);
-          // If text extraction fails, fall back to regular file handling
           contentToStore = null;
         }
       }
