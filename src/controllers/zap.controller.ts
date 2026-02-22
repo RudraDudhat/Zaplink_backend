@@ -317,6 +317,7 @@ export const getZapByShortId = async (req: Request, res: Response) => {
       );
 
       if (!isPasswordValid) {
+        res.locals.invalidZapPassword = true;
         if (req.headers.accept && req.headers.accept.includes("text/html")) {
           return res.redirect(
             `${FRONTEND_URL}/zaps/${shortId}?error=incorrect_password`

@@ -71,3 +71,25 @@ export const downloadLimiter = rateLimit({
         "Too many download requests from this IP. Please slow down and try again in a minute.",
     handler: tooManyRequestsHandler,
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Incorrect password limiter  (GET /api/zaps/:shortId?password=...)
+// Counts only incorrect password attempts for protected zaps.
+// Config: ZAP_PASSWORD_ATTEMPT_WINDOW_MS  (default: 15 min)
+//         ZAP_PASSWORD_ATTEMPT_MAX        (default: 5 attempts)
+// ─────────────────────────────────────────────────────────────────────────────
+export const zapPasswordAttemptLimiter = rateLimit({
+    windowMs:
+        parseInt(process.env.ZAP_PASSWORD_ATTEMPT_WINDOW_MS || "") ||
+        15 * 60 * 1000,
+    max: parseInt(process.env.ZAP_PASSWORD_ATTEMPT_MAX || "") || 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message:
+        "Too many incorrect password attempts from this IP. Please try again later.",
+    handler: tooManyRequestsHandler,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (_req, res) => {
+        return !(res.locals && res.locals.invalidZapPassword === true);
+    },
+});

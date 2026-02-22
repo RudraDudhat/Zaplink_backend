@@ -8,6 +8,7 @@ import {
 import {
   uploadLimiter,
   downloadLimiter,
+  zapPasswordAttemptLimiter,
 } from "../middlewares/rateLimiter";
 
 const router = express.Router();
@@ -24,7 +25,7 @@ router.post("/upload", uploadLimiter, upload.single("file"), createZap);
  * Rate limit: 30 requests / min per IP  (downloadLimiter)
  * Prevents bulk scraping / automated mass-download of shared content.
  */
-router.get("/:shortId", downloadLimiter, getZapByShortId);
+router.get("/:shortId", downloadLimiter, zapPasswordAttemptLimiter, getZapByShortId);
 
 // router.post("/shorten", (req, res) => shortenUrl(req, res));
 
