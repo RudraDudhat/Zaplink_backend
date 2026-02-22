@@ -210,46 +210,7 @@ export const createZap = async (req: Request, res: any) => {
         }
       }
 
-      uploadedUrl = filePath;
-
-      // Upload to Cloudinary if it's a file
-      if (file) {
-        try {
-          const fileName = (file as any).originalname;
-          const ext = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
-          let resource_type = "raw";
-          
-          if (type === "image") {
-            resource_type = "image";
-          } else if (type === "video") {
-            resource_type = "video";
-          }
-
-          const uploadResult: any = await cloudinary.uploader.upload(filePath, {
-            folder: 'zaplink_folders',
-            resource_type: resource_type,
-            public_id: `${path.basename(fileName, ext)}_${Date.now()}${ext}`
-          } as any);
-          
-          uploadedUrl = uploadResult.secure_url;
-          console.log('File uploaded to Cloudinary:', uploadedUrl);
-          
-          // Clean up local file after upload
-          try {
-            await fs.promises.unlink(filePath);
-            // Also delete compressed file if it exists and is different from original
-            if (filePath !== (file as any).path) {
-              await fs.promises.unlink((file as any).path).catch(() => {});
-            }
-          } catch (cleanupError) {
-            console.warn('Failed to cleanup local file:', cleanupError);
-          }
-        } catch (uploadError) {
-          console.error('Cloudinary upload failed:', uploadError);
-          // Continue with local file path if cloudinary upload fails
-        }
-      }
-
+      // Process document/presentation text extraction BEFORE Cloudinary upload
       if (type === "document" || type === "presentation") {
         try {
           if (fileExtension === ".docx") {
@@ -272,6 +233,39 @@ export const createZap = async (req: Request, res: any) => {
           console.error("Error extracting text from file:", error);
           contentToStore = null;
         }
+      }
+
+      // Upload to Cloudinary after all processing
+      try {
+        const fileName = (file as any).originalname;
+        const ext = fileName.substring(fileName.lastIndexOf('.')).toLowerCase();
+        let resource_type = "raw";
+        
+        if (type === "image") {
+          resource_type = "image";
+        } else if (type === "video") {
+          resource_type = "video";
+        }
+
+        const uploadResult: any = await cloudinary.uploader.upload(filePath, {
+          folder: 'zaplink_folders',
+          resource_type: resource_type,
+          public_id: `${path.basename(fileName, ext)}_${Date.now()}${ext}`
+        } as any);
+        
+        uploadedUrl = uploadResult.secure_url;
+        console.log('File uploaded to Cloudinary:', uploadedUrl);
+        
+        // Clean up local file after successful upload
+        try {
+          await fs.promises.unlink(filePath);
+        } catch (cleanupError) {
+          console.warn('Failed to cleanup local file:', cleanupError);
+        }
+      } catch (uploadError) {
+        console.error('Cloudinary upload failed:', uploadError);
+        // Continue with local file path if cloudinary upload fails
+        uploadedUrl = filePath;
       }
     } else if (originalUrl) {
       uploadedUrl = originalUrl;
