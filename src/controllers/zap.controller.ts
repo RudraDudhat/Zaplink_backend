@@ -13,7 +13,10 @@ import * as path from "path";
 import * as os from "os";
 dotenv.config();
 
-const nanoid = customAlphabet("1234567890abcdefghijklmnopqrstuvwxyz", 6);
+const nanoid = customAlphabet(
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+  8
+);
 
 const FRONTEND_URL =
   process.env.FRONTEND_URL || "https://zaplink.krishnapaljadeja.com";
