@@ -6,6 +6,7 @@ import prisma from "../utils/prismClient";
 import cloudinary from "../middlewares/cloudinary";
 import { ApiError } from "../utils/ApiError";
 import { ApiResponse } from "../utils/ApiResponse";
+import { compressPDF } from "../utils/pdfCompressor";
 import dotenv from "dotenv";
 import mammoth from "mammoth";
 import * as fs from "fs";
@@ -181,16 +182,62 @@ export const createZap = async (req: Request, res: any) => {
     let contentToStore: string | null = null;
 
     if (file) {
-      uploadedUrl = (file as any).path;
+      let filePath = (file as any).path;
+      const fileName = (file as any).originalname;
+      const fileExtension = path.extname(fileName).toLowerCase();
 
+      // Compress PDF if requested
+      const shouldCompress = compress === true || compress === "true" || compress === "1";
+      if (fileExtension === ".pdf" && shouldCompress) {
+        try {
+          const compressedPath = path.join(
+            path.dirname(filePath),
+            `${path.basename(filePath, ".pdf")}_compressed.pdf`
+          );
+          await compressPDF(filePath, compressedPath);
+          const compressedStats = await fs.promises.stat(compressedPath);
+          if (compressedStats.size > 0) {
+            filePath = compressedPath;
+            console.log(`PDF compressed successfully`);
+          }
+        } catch (err) {
+          console.error("Compression error, continuing with original:", err);
+        }
+      }
+
+      // Upload to Cloudinary
+      try {
+        let resource_type = "raw";
+        if (type === "image") {
+          resource_type = "image";
+        } else if (type === "video") {
+          resource_type = "video";
+        }
+
+        const uploadResult: any = await cloudinary.uploader.upload(filePath, {
+          folder: 'zaplink_folders',
+          resource_type: resource_type,
+        });
+        
+        uploadedUrl = uploadResult.secure_url;
+        console.log('File uploaded to Cloudinary:', uploadedUrl);
+        
+        // Clean up local file after successful upload
+        try {
+          await fs.promises.unlink(filePath);
+        } catch (cleanupError) {
+          console.warn('Failed to cleanup local file:', cleanupError);
+        }
+      } catch (uploadError) {
+        console.error('Cloudinary upload failed:', uploadError);
+        // Fall back to local file path if upload fails
+        uploadedUrl = filePath;
+      }
+
+      // Extract text from documents BEFORE uploading to Cloudinary
       if (type === "document" || type === "presentation") {
         try {
-          const filePath = (file as any).path;
-          const fileName = (file as any).originalname;
-          const fileExtension = path.extname(fileName).toLowerCase();
-
           if (fileExtension === ".docx") {
-            // Extract text from DOCX
             const result = await mammoth.extractRawText({ path: filePath });
             const extractedText = result.value;
 
@@ -211,7 +258,6 @@ export const createZap = async (req: Request, res: any) => {
           }
         } catch (error) {
           console.error("Error extracting text from file:", error);
-          // If text extraction fails, fall back to regular file handling
           contentToStore = null;
         }
       }
