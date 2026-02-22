@@ -245,8 +245,8 @@ export const createZap = async (req: Request, res: any) => {
         expiresAt: expiresAt ? new Date(expiresAt) : null,
       },
     });
-    const domain = process.env.BASE_URL || "https://api.krishnapaljadeja.com";
-    const shortUrl = `${domain}/api/zaps/${shortId}`;
+    const domain = process.env.FRONTEND_URL || "https://zaplink.krishnapaljadeja.com";
+    const shortUrl = `${domain}/zaps/${shortId}`;
 
     const qrCode = await QRCode.toDataURL(shortUrl);
 
@@ -422,8 +422,8 @@ export const shortenUrl = async (req: Request, res: Response) => {
         shortId,
       },
     });
-    const domain = process.env.BASE_URL || "https://api.krishnapaljadeja.com";
-    const shortUrl = `${domain}/api/zaps/${shortId}`;
+    const domain = process.env.FRONTEND_URL || "https://zaplink.krishnapaljadeja.com";
+    const shortUrl = `${domain}/zaps/${shortId}`;
     const qrCode = await QRCode.toDataURL(shortUrl);
     return res
       .status(201)
