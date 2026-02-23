@@ -14,8 +14,13 @@ import { compressPDF } from "../utils/pdfCompressor";
 import { encryptText, decryptText } from "../utils/encryption";
 import dotenv from "dotenv";
 import mammoth from "mammoth";
-import * as fs from "fs";
 import * as path from "path";
+import {
+  hasQuizProtection,
+  verifyQuizAnswer,
+  hashQuizAnswer,
+  validateFileAccess,
+} from "../utils/accessControl";
 import * as os from "os";
 import { deleteFromCloudinary } from "../utils/cloudinaryHelper";
 dotenv.config();
@@ -170,6 +175,9 @@ export const createZap = async (req: Request, res: any): Promise<any> => {
       password,
       viewLimit,
       expiresAt,
+      quizQuestion,
+      quizAnswer,
+      delayedAccessTime,
       compress,
     } = req.body;
     const file = req.file;
@@ -187,6 +195,14 @@ export const createZap = async (req: Request, res: any): Promise<any> => {
     const shortId = nanoid();
     const zapId = nanoid();
     const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
+    const hashedQuizAnswer = quizQuestion && quizAnswer
+      ? await hashQuizAnswer(quizAnswer)
+      : null;
+
+    let unlockAt: Date | null = null;
+    if (delayedAccessTime && delayedAccessTime > 0) {
+      unlockAt = new Date(Date.now() + delayedAccessTime * 1000);
+    }
 
     let uploadedUrl: string | null = null;
     let contentToStore: string | null = null;
@@ -306,6 +322,9 @@ export const createZap = async (req: Request, res: any): Promise<any> => {
         passwordHash: hashedPassword,
         viewLimit: viewLimit ? parseInt(viewLimit) : null,
         expiresAt: expiresAt ? new Date(expiresAt) : null,
+        quizQuestion: quizQuestion || null,
+        quizAnswerHash: hashedQuizAnswer,
+        unlockAt: unlockAt,
       },
     });
     const domain = process.env.FRONTEND_URL || "https://zaplink.krishnapaljadeja.com";
@@ -322,6 +341,8 @@ export const createZap = async (req: Request, res: any): Promise<any> => {
           qrCode,
           type,
           name,
+          hasQuizProtection: !!quizQuestion,
+          hasDelayedAccess: !!unlockAt,
         },
         "Zap created successfully.",
       ),
@@ -338,6 +359,7 @@ export const getZapByShortId = async (
 ): Promise<any> => {
   try {
     const shortId: string = req.params.shortId as string;
+    const quizAnswer = req.query.quizAnswer as string | undefined;
 
     const zap = await prisma.zap.findUnique({
       where: { shortId },
@@ -379,6 +401,70 @@ export const getZapByShortId = async (
       return res.redirect(`${FRONTEND_URL}/zaps/${shortId}?error=viewlimit`);
     }
 
+    // Check Delayed Access 
+    if (zap.unlockAt) {
+      const now = new Date();
+      const unlockTime = new Date(zap.unlockAt);
+      if (now.getTime() < unlockTime.getTime()) {
+        // File is still locked by delayed access
+        const remainingMs = unlockTime.getTime() - now.getTime();
+        if (req.headers.accept && req.headers.accept.includes("text/html")) {
+          return res.redirect(
+            `${FRONTEND_URL}/zaps/${shortId}?error=delayed_access&unlockTime=${unlockTime.toISOString()}`
+          );
+        }
+        res.status(423).json(
+          new ApiError(
+            423,
+            "This file is temporarily locked and will be available at " +
+              unlockTime.toISOString()
+          )
+        );
+        return;
+      }
+    }
+
+    // ── Check Quiz Protection ─────────────────────────────────────────────────────
+    if (hasQuizProtection(zap)) {
+      if (!quizAnswer) {
+        // Quiz answer not provided
+        if (req.headers.accept && req.headers.accept.includes("text/html")) {
+          return res.redirect(
+            `${FRONTEND_URL}/zaps/${shortId}?error=quiz_required&question=${encodeURIComponent(
+              zap.quizQuestion || ""
+            )}`
+          );
+        }
+        res.status(423).json({
+          error: "quiz_required",
+          message: "This file is protected by a quiz.",
+          question: zap.quizQuestion,
+        });
+        return;
+      }
+
+      // Verify the quiz answer
+      const isCorrect = await verifyQuizAnswer(
+        quizAnswer,
+        zap.quizAnswerHash!
+      );
+
+      if (!isCorrect) {
+        if (req.headers.accept && req.headers.accept.includes("text/html")) {
+          return res.redirect(
+            `${FRONTEND_URL}/zaps/${shortId}?error=quiz_incorrect&question=${encodeURIComponent(
+              zap.quizQuestion || ""
+            )}`
+          );
+        }
+        res.status(401).json(
+          new ApiError(401, "Incorrect quiz answer. Please try again.")
+        );
+        return;
+      }
+    }
+
+    // ── Check Password Protection ─────────────────────────────────────────────────
     if (zap.passwordHash) {
       const providedPassword = req.query.password as string;
 
@@ -409,6 +495,11 @@ export const getZapByShortId = async (
 
       clearZapPasswordAttemptCounter(req, shortId);
     }
+
+    const updatedZap = await prisma.zap.update({
+      where: { shortId },
+      data: { viewCount: zap.viewCount + 1 },
+    });
 
     const updateResult = await prisma.$executeRaw`
       UPDATE "Zap"
@@ -467,6 +558,14 @@ export const getZapByShortId = async (
         zap.originalUrl.startsWith("DOCX_CONTENT:") ||
         zap.originalUrl.startsWith("PPTX_CONTENT:")
       ) {
+        const textContent = zap.originalUrl.substring(13);
+
+        if (req.headers.accept && req.headers.accept.includes("text/html")) {
+          const html = generateTextHtml(zap.name || "Untitled", textContent);
+          res.set("Content-Type", "text/html");
+          res.send(html);
+        } else {
+          res.json({ content: textContent, type: "document", name: zap.name });
         try {
           const encryptedContent = zap.originalUrl.substring(13);
           // Decrypt document content before serving
@@ -532,40 +631,177 @@ export const getZapByShortId = async (
   }
 };
 
-export const shortenUrl = async (req: Request, res: Response) => {
+
+/**
+ * Get metadata about a Zap (quiz question, locked status, etc.)
+ * Does not require access to the file content
+ */
+export const getZapMetadata = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
-    const { url, name } = req.body;
-    if (!url || typeof url !== "string" || !/^https?:\/\//.test(url)) {
-      return res
-        .status(400)
-        .json(new ApiError(400, "A valid URL is required."));
-    }
-    const shortId = nanoid();
-    const zapId = nanoid();
-    const zap = await prisma.zap.create({
-      data: {
-        type: "URL",
-        name: name || "Shortened URL",
-        cloudUrl: url,
-        originalUrl: url,
-        qrId: zapId,
-        shortId,
+    const shortId: string = req.params.shortId as string;
+
+    const zap = await prisma.zap.findUnique({
+      where: { shortId },
+      select: {
+        name: true,
+        type: true,
+        quizQuestion: true,
+        unlockAt: true,
+        passwordHash: true,
+        viewCount: true,
+        viewLimit: true,
+        expiresAt: true,
       },
     });
-    const domain = process.env.FRONTEND_URL || "https://zaplink.krishnapaljadeja.com";
-    const shortUrl = `${domain}/zaps/${shortId}`;
-    const qrCode = await QRCode.toDataURL(shortUrl);
-    return res
-      .status(201)
-      .json(
-        new ApiResponse(
-          201,
-          { zapId, shortUrl, qrCode, type: "URL", name: zap.name },
-          "Short URL created successfully."
-        )
+
+    if (!zap) {
+      res.status(404).json(new ApiError(404, "Zap not found."));
+      return;
+    }
+
+    const now = new Date();
+
+    // Check if expired
+    if (zap.expiresAt && now.getTime() > new Date(zap.expiresAt).getTime()) {
+      res.status(410).json(new ApiError(410, "This Zap has expired."));
+      return;
+    }
+
+    // Check if view limit exceeded
+    if (zap.viewLimit && zap.viewCount >= zap.viewLimit) {
+      res.status(410).json(
+        new ApiError(410, "View limit for this Zap has been exceeded.")
       );
-  } catch (err) {
-    console.error("shortenUrl Error:", err);
-    return res.status(500).json(new ApiError(500, "Internal server error"));
+      return;
+    }
+
+    res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          name: zap.name,
+          type: zap.type,
+          hasQuizProtection: !!zap.quizQuestion,
+          quizQuestion: zap.quizQuestion || undefined,
+          hasDelayedAccess: !!zap.unlockAt,
+          isDelayedLocked: zap.unlockAt
+            ? now.getTime() < new Date(zap.unlockAt).getTime()
+            : false,
+          unlockAt: zap.unlockAt,
+          hasPasswordProtection: !!zap.passwordHash,
+          viewsRemaining: zap.viewLimit
+            ? Math.max(0, zap.viewLimit - zap.viewCount)
+            : null,
+        },
+        "Zap metadata retrieved successfully."
+      )
+    );
+  } catch (error) {
+    res.status(500).json(new ApiError(500, "Internal server error"));
   }
 };
+
+/**
+ * Verify quiz answer for a Zap
+ * Returns a token if correct, which can be used in subsequent requests
+ */
+export const verifyQuizForZap = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const shortId: string = req.params.shortId as string;
+    const { answer } = req.body;
+
+    if (!answer || typeof answer !== "string") {
+      res.status(400).json(new ApiError(400, "Answer is required."));
+      return;
+    }
+
+    const zap = await prisma.zap.findUnique({
+      where: { shortId },
+      select: {
+        quizQuestion: true,
+        quizAnswerHash: true,
+      },
+    });
+
+    if (!zap) {
+      res.status(404).json(new ApiError(404, "Zap not found."));
+      return;
+    }
+
+    if (!zap.quizQuestion || !zap.quizAnswerHash) {
+      res
+        .status(400)
+        .json(new ApiError(400, "This Zap does not have quiz protection."));
+      return;
+    }
+
+    const isCorrect = await verifyQuizAnswer(answer, zap.quizAnswerHash);
+
+    if (!isCorrect) {
+      res.status(401).json(
+        new ApiError(401, "Incorrect answer. Please try again.")
+      );
+      return;
+    }
+
+    // Return success with quiz verified flag
+    res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          verified: true,
+          quizCorrect: true,
+        },
+        "Quiz answer verified successfully."
+      )
+    );
+  } catch (error) {
+    console.error("verifyQuizForZap Error:", error);
+    res.status(500).json(new ApiError(500, "Internal server error"));
+  }
+};
+
+// export const shortenUrl = async (req: Request, res: Response) => {
+
+//   try {
+//     const { url, name } = req.body;
+//     if (!url || typeof url !== "string" || !/^https?:\/\//.test(url)) {
+//       return res
+//         .status(400)
+//         .json(new ApiError(400, "A valid URL is required."));
+//     }
+//     const shortId = nanoid();
+//     const zapId = nanoid();
+//     const zap = await prisma.zap.create({
+//       data: {
+//         type: "URL",
+//         name: name || "Shortened URL",
+//         cloudUrl: url,
+//         originalUrl: url,
+//         qrId: zapId,
+//         shortId,
+//       },
+//     });
+//     const domain = process.env.BASE_URL || "https://api.krishnapaljadeja.com";
+//     const shortUrl = `${domain}/api/zaps/${shortId}`;
+//     const qrCode = await QRCode.toDataURL(shortUrl);
+//     return res
+//       .status(201)
+//       .json(
+//         new ApiResponse(
+//           201,
+//           { zapId, shortUrl, qrCode, type: "URL", name: zap.name },
+//           "Short URL created successfully."
+//         )
+//       );
+//   } catch (err) {
+//     console.error("shortenUrl Error:", err);
+//     return res.status(500).json(new ApiError(500, "Internal server error"));
+//   }
+// };
