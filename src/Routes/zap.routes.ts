@@ -137,10 +137,10 @@ router.post("/upload", upload.single("file"), createZap);
  *         description: Server error
  */
 router.get("/:shortId", getZapByShortId);
- * POST /api/zaps/upload
- * Rate limit: 10 requests / min per IP  (uploadLimiter)
- * Also triggers QR code generation — compute-heavy, kept strict.
- */
+//  * POST /api/zaps/upload
+//  * Rate limit: 10 requests / min per IP  (uploadLimiter)
+//  * Also triggers QR code generation — compute-heavy, kept strict.
+//  */
 router.post("/upload", uploadLimiter, upload.single("file"), createZap);
 
 /**
