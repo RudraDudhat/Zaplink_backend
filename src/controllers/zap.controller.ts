@@ -239,6 +239,19 @@ export const getZapByShortId = async (
       res.status(404).json(new ApiError(404, "Zap not found."));
       return;
     }
+
+    // Check expiration
+    if (zap.expiresAt && new Date() > zap.expiresAt) {
+      res.status(410).json(new ApiError(410, "Zap has expired."));
+      return;
+    }
+
+    // Check view limit BEFORE incrementing (prevents over-limit access)
+    if (zap.viewLimit !== null && zap.viewCount >= zap.viewLimit) {
+      res.status(410).json(new ApiError(410, "View limit exceeded."));
+      return;
+    }
+
     if (zap.unlockAt && new Date() < new Date(zap.unlockAt)) {
       res.status(423).json(new ApiError(423, "File is currently locked."));
       return;
@@ -263,11 +276,42 @@ export const getZapByShortId = async (
       clearZapPasswordAttemptCounter(req, shortId);
     }
 
-    await prisma.zap.update({
-      where: { shortId },
-      data: { viewCount: { increment: 1 } },
-    });
-    res.json(new ApiResponse(200, zap, "Success"));
+    // Atomic increment with concurrent-safe view limit check
+    // Use a transaction to ensure atomicity under concurrent requests
+    try {
+      const updatedZap = await prisma.$transaction(async (tx) => {
+        // Re-fetch to get the latest viewCount (handles concurrent requests)
+        const currentZap = await tx.zap.findUnique({
+          where: { shortId },
+        });
+
+        if (!currentZap) {
+          throw new Error("VIEW_LIMIT_EXCEEDED");
+        }
+
+        // Check view limit with the latest data (prevents race conditions)
+        if (
+          currentZap.viewLimit !== null &&
+          currentZap.viewCount >= currentZap.viewLimit
+        ) {
+          throw new Error("VIEW_LIMIT_EXCEEDED");
+        }
+
+        // Increment view count atomically
+        return await tx.zap.update({
+          where: { shortId },
+          data: { viewCount: { increment: 1 } },
+        });
+      });
+
+      res.json(new ApiResponse(200, updatedZap, "Success"));
+    } catch (txError: any) {
+      if (txError.message === "VIEW_LIMIT_EXCEEDED") {
+        res.status(410).json(new ApiError(410, "View limit exceeded."));
+        return;
+      }
+      throw txError; // Re-throw unexpected errors
+    }
   } catch (e) {
     res.status(500).json(new ApiError(500, "Error"));
   }
